@@ -14,7 +14,8 @@ def mpjpe(predicted, target):
     often referred to as "Protocol #1" in many papers.
     """
     assert predicted.shape == target.shape
-    return torch.mean(torch.norm(predicted - target, dim=len(target.shape)-1))
+    norms = (torch.norm(predicted - target, dim=len(target.shape)-1))
+    return torch.nansum(norms) / torch.sum(torch.isnan(norms) == False)
     
 def weighted_mpjpe(predicted, target, w):
     """
@@ -30,16 +31,18 @@ def p_mpjpe(predicted, target):
     often referred to as "Protocol #2" in many papers.
     """
     assert predicted.shape == target.shape
-    
-    muX = np.mean(target, axis=1, keepdims=True)
-    muY = np.mean(predicted, axis=1, keepdims=True)
-    
+
+    np.isnan(predicted).any(axis=1)
+
+    muX = np.nanmean(target, axis=1, keepdims=True)
+    muY = np.nanmean(predicted, axis=1, keepdims=True)
+
     X0 = target - muX
     Y0 = predicted - muY
 
-    normX = np.sqrt(np.sum(X0**2, axis=(1, 2), keepdims=True))
-    normY = np.sqrt(np.sum(Y0**2, axis=(1, 2), keepdims=True))
-    
+    normX = np.sqrt(np.nansum(X0**2, axis=(1, 2), keepdims=True))
+    normY = np.sqrt(np.nansum(Y0**2, axis=(1, 2), keepdims=True))
+
     X0 /= normX
     Y0 /= normY
 
@@ -54,7 +57,7 @@ def p_mpjpe(predicted, target):
     s[:, -1] *= sign_detR.flatten()
     R = np.matmul(V, U.transpose(0, 2, 1)) # Rotation
 
-    tr = np.expand_dims(np.sum(s, axis=1, keepdims=True), axis=2)
+    tr = np.expand_dims(np.nansum(s, axis=1, keepdims=True), axis=2)
 
     a = tr * normX / normY # Scale
     t = muX - a*np.matmul(muY, R) # Translation

@@ -6,7 +6,11 @@
 #
 
 import numpy as np
-from common.skeleton import Skeleton
+
+try:
+    from external.VideoPose3D.common.skeleton import Skeleton
+except ModuleNotFoundError:
+    from common.skeleton import Skeleton
 
 class MocapDataset:
     def __init__(self, fps, skeleton):
@@ -21,6 +25,9 @@ class MocapDataset:
             for action in self._data[subject].keys():
                 s = self._data[subject][action]
                 if 'positions' in s:
+                    # HOTFIX
+                    if 'positions' in s["positions"]:
+                        s["positions"] = s["positions"]["positions"]
                     s['positions'] = s['positions'][:, kept_joints]
                 
         

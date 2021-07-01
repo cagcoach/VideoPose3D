@@ -4,6 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
+import pathlib
+from datetime import datetime
 
 import numpy as np
 
@@ -18,15 +20,23 @@ import sys
 import errno
 
 from common.camera import *
+from common.h36m_dataset import Human36mDataset
 from common.model import *
 from common.loss import *
 from common.generators import ChunkedGenerator, UnchunkedGenerator
 from time import time
 from common.utils import deterministic_random
+from data.h36m_noTears import Human36mNoTears
 
 args = parse_args()
 print(args)
 
+#macros
+args.checkpoint = args.checkpoint.replace("%DATE%",datetime.now().strftime("%Y%m%d_%H%M%S"))
+
+#drop command
+with open(os.path.join(args.checkpoint,"_command{}.txt".format(datetime.now().strftime("%Y%m%d_%H%M%S"))),"x") as f:
+    f.write(" ".join(sys.argv))
 try:
     # Create checkpoint directory if it does not exist
     os.makedirs(args.checkpoint)
@@ -35,18 +45,31 @@ except OSError as e:
         raise RuntimeError('Unable to create checkpoint directory:', args.checkpoint)
 
 print('Loading dataset...')
-dataset_path = 'data/data_3d_' + args.dataset + '.npz'
-if args.dataset == 'h36m':
-    from common.h36m_dataset import Human36mDataset
-    dataset = Human36mDataset(dataset_path)
-elif args.dataset.startswith('humaneva'):
-    from common.humaneva_dataset import HumanEvaDataset
-    dataset = HumanEvaDataset(dataset_path)
-elif args.dataset.startswith('custom'):
-    from common.custom_dataset import CustomDataset
-    dataset = CustomDataset('data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz')
+if False: #USE VANILLA
+    dataset_path = 'data/data_3d_' + args.dataset + '.npz'
+    if args.dataset == 'h36m':
+        from common.h36m_dataset import Human36mDataset
+        dataset = Human36mDataset(dataset_path, remove_static_joints=True)
+    elif args.dataset.startswith('humaneva'):
+        from common.humaneva_dataset import HumanEvaDataset
+
+        dataset = HumanEvaDataset(dataset_path)
+    elif args.dataset.startswith('custom'):
+        from common.custom_dataset import CustomDataset
+
+        dataset = CustomDataset('data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz')
+    else:
+        raise KeyError('Invalid dataset')
+
 else:
-    raise KeyError('Invalid dataset')
+    dataset_path = 'data/data_3d_' + args.dataset + "_estimated_notears_pt"+  '.npz'
+    if args.dataset == 'h36m':
+        from common.Estimated3dDataset import Estimated3dDataset
+        dataset = Estimated3dDataset(dataset_path)
+    else:
+        raise KeyError('Invalid dataset')
+
+
 
 print('Preparing data...')
 for subject in dataset.subjects():
@@ -56,18 +79,46 @@ for subject in dataset.subjects():
         if 'positions' in anim:
             positions_3d = []
             for cam in anim['cameras']:
-                pos_3d = world_to_camera(anim['positions'], R=cam['orientation'], t=cam['translation'])
+                #hotfix
+                if isinstance(anim['positions'],dict) and "positions" in anim['positions']:
+                    anim['positions'] = anim['positions']["positions"]
+
+                try:
+                    pos_3d = world_to_camera(anim['positions'], R=cam['orientation'], t=cam['translation'])
+                except RuntimeError:
+                    pos_3d = world_to_camera(anim['positions'], R=cam['orientation'].astype(float), t=cam['translation'])
+
+
                 pos_3d[:, 1:] -= pos_3d[:, :1] # Remove global offset, but keep trajectory in first position
                 positions_3d.append(pos_3d)
             anim['positions_3d'] = positions_3d
 
 print('Loading 2D detections...')
-keypoints = np.load('data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz', allow_pickle=True)
-keypoints_metadata = keypoints['metadata'].item()
-keypoints_symmetry = keypoints_metadata['keypoints_symmetry']
-kps_left, kps_right = list(keypoints_symmetry[0]), list(keypoints_symmetry[1])
-joints_left, joints_right = list(dataset.skeleton().joints_left()), list(dataset.skeleton().joints_right())
-keypoints = keypoints['positions_2d'].item()
+if args.keypoints == "h36m_noTears":
+    kp = Human36mNoTears("/home/christian/git/multipose2d_without_tears/outdir/")
+    #keypoints = np.load('data/data_2d_' + args.dataset + '_' + "cpn_ft_h36m_dbb" + '.npz', allow_pickle=True)
+    keypoints = dict()
+    for k in kp._data.keys():
+        keypoints[k] = dict()
+        for l in kp._data[k].keys():
+            keypoints[k][l] = kp._data[k][l]["positions"]
+
+    #Remove broken Data
+    keypoints["S11"].pop("Directions",None)
+
+
+    keypoints_metadata = {"layout_name": "NoTears", "num_joints": 17, "keypoints_symmetry":[[2,4,6,8,10,12,14,16],[1,3,5,7,9,11,13,15]]}
+    keypoints_symmetry = keypoints_metadata['keypoints_symmetry']
+    kps_left, kps_right = list(keypoints_symmetry[0]), list(keypoints_symmetry[1])
+    joints_left, joints_right = list(dataset.skeleton().joints_left()), list(dataset.skeleton().joints_right())
+else:
+    keypoints = np.load('data/data_2d_' + args.dataset + '_' + args.keypoints + '.npz', allow_pickle=True)
+
+    keypoints_metadata = keypoints['metadata'].item()
+    keypoints_symmetry = keypoints_metadata['keypoints_symmetry']
+    kps_left, kps_right = list(keypoints_symmetry[0]), list(keypoints_symmetry[1])
+    joints_left, joints_right = list(dataset.skeleton().joints_left()), list(dataset.skeleton().joints_right())
+    keypoints = keypoints['positions_2d'].item()
 
 for subject in dataset.subjects():
     assert subject in keypoints, 'Subject {} is missing from the 2D detections dataset'.format(subject)
@@ -80,9 +131,13 @@ for subject in dataset.subjects():
             
             # We check for >= instead of == because some videos in H3.6M contain extra frames
             mocap_length = dataset[subject][action]['positions_3d'][cam_idx].shape[0]
-            assert keypoints[subject][action][cam_idx].shape[0] >= mocap_length
-            
-            if keypoints[subject][action][cam_idx].shape[0] > mocap_length:
+
+            if keypoints[subject][action][cam_idx].shape[0] < mocap_length:
+                #assert keypoints[subject][action][cam_idx].shape[0] >= mocap_length
+                dataset[subject][action]['positions_3d'][cam_idx] = dataset[subject][action]['positions_3d'][cam_idx][:keypoints[subject][action][cam_idx].shape[0]]
+                print("WARNING Keypoints not enough frames! {}, {}, {}".format(subject,action,cam_idx))
+
+            elif keypoints[subject][action][cam_idx].shape[0] > mocap_length:
                 # Shorten sequence
                 keypoints[subject][action][cam_idx] = keypoints[subject][action][cam_idx][:mocap_length]
 
@@ -93,6 +148,12 @@ for subject in keypoints.keys():
         for cam_idx, kps in enumerate(keypoints[subject][action]):
             # Normalize camera frame
             cam = dataset.cameras()[subject][cam_idx]
+            if cam is None:
+                print("WARNING: cam IS NONE!")
+                continue
+            if kps is None:
+                print("WARNING: kps IS NONE!")
+                continue
             kps[..., :2] = normalize_screen_coordinates(kps[..., :2], w=cam['res_w'], h=cam['res_h'])
             keypoints[subject][action][cam_idx] = kps
 
@@ -121,7 +182,8 @@ def fetch(subjects, action_filter=None, subset=1, parse_3d_poses=True):
                         break
                 if not found:
                     continue
-                
+
+
             poses_2d = keypoints[subject][action]
             for i in range(len(poses_2d)): # Iterate across cameras
                 out_poses_2d.append(poses_2d[i])
@@ -209,7 +271,7 @@ if args.resume or args.evaluate:
     model_pos_train.load_state_dict(checkpoint['model_pos'])
     model_pos.load_state_dict(checkpoint['model_pos'])
     
-    if args.evaluate and 'model_traj' in checkpoint:
+    if args.evaluate and 'model_traj' in checkpoint and checkpoint["model_traj"]!=None:
         # Load trajectory model if it contained in the checkpoint (e.g. for inference in the wild)
         model_traj = TemporalModel(poses_valid_2d[0].shape[-2], poses_valid_2d[0].shape[-1], 1,
                             filter_widths=filter_widths, causal=args.causal, dropout=args.dropout, channels=args.channels,
@@ -596,7 +658,7 @@ if not args.evaluate:
         if epoch % args.checkpoint_frequency == 0:
             chk_path = os.path.join(args.checkpoint, 'epoch_{}.bin'.format(epoch))
             print('Saving checkpoint to', chk_path)
-            
+            pathlib.Path(args.checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save({
                 'epoch': epoch,
                 'lr': lr,
@@ -649,7 +711,7 @@ if not args.evaluate:
             plt.close('all')
 
 # Evaluate
-def evaluate(test_generator, action=None, return_predictions=False, use_trajectory_model=False):
+def evaluate(test_generator, action=None, return_predictions=False, use_trajectory_model=False, joints3D:dict = None, joints2D:dict = None):
     epoch_loss_3d_pos = 0
     epoch_loss_3d_pos_procrustes = 0
     epoch_loss_3d_pos_scale = 0
@@ -671,23 +733,33 @@ def evaluate(test_generator, action=None, return_predictions=False, use_trajecto
             else:
                 predicted_3d_pos = model_traj(inputs_2d)
 
+            inputs_3d = torch.from_numpy(batch.astype('float32'))
+            if torch.cuda.is_available():
+                inputs_3d = inputs_3d.cuda()
+            inputs_3d[:, :, 0] = 0
+            if test_generator.augment_enabled():
+                inputs_3d = inputs_3d[:1]
+
+            if (joints2D is not None and joints3D is not None):
+                commonJoints = [x for x in joints2D.keys() if x in joints3D.keys()]
+                inputs_3d = inputs_3d[:, :, [joints3D[k] for k in commonJoints], :]
+                predicted_3d_pos = predicted_3d_pos[:, :, [joints2D[k] for k in commonJoints], :]
+                joints = {b:a for a,b in enumerate(commonJoints)}
+                if test_generator.augment_enabled() and not use_trajectory_model:
+                    joints_right_ = [joints[[key for key,val in joints3D.items() if val == k][0]] for k in joints_right]
+                    joints_left_ = [joints[[key for key, val in joints3D.items() if val == k][0]] for k in joints_left]
+
+
             # Test-time augmentation (if enabled)
             if test_generator.augment_enabled():
                 # Undo flipping and take average with non-flipped version
                 predicted_3d_pos[1, :, :, 0] *= -1
                 if not use_trajectory_model:
-                    predicted_3d_pos[1, :, joints_left + joints_right] = predicted_3d_pos[1, :, joints_right + joints_left]
+                    predicted_3d_pos[1, :, joints_left_ + joints_right_] = predicted_3d_pos[1, :, joints_right_ + joints_left_]
                 predicted_3d_pos = torch.mean(predicted_3d_pos, dim=0, keepdim=True)
                 
             if return_predictions:
                 return predicted_3d_pos.squeeze(0).cpu().numpy()
-                
-            inputs_3d = torch.from_numpy(batch.astype('float32'))
-            if torch.cuda.is_available():
-                inputs_3d = inputs_3d.cuda()
-            inputs_3d[:, :, 0] = 0    
-            if test_generator.augment_enabled():
-                inputs_3d = inputs_3d[:1]
 
             error = mpjpe(predicted_3d_pos, inputs_3d)
             epoch_loss_3d_pos_scale += inputs_3d.shape[0]*inputs_3d.shape[1] * n_mpjpe(predicted_3d_pos, inputs_3d).item()
@@ -842,7 +914,11 @@ else:
             gen = UnchunkedGenerator(None, poses_act, poses_2d_act,
                                      pad=pad, causal_shift=causal_shift, augment=args.test_time_augmentation,
                                      kps_left=kps_left, kps_right=kps_right, joints_left=joints_left, joints_right=joints_right)
-            e1, e2, e3, ev = evaluate(gen, action_key)
+
+
+            #FIXME
+            e1, e2, e3, ev = evaluate(gen, action_key, joints2D = Human36mNoTears.Joints(), joints3D=Human36mDataset.Joints())
+            #e1, e2, e3, ev = evaluate(gen, action_key) #joints2D=Human36mDataset.Joints(),joints3D=Human36mDataset.Joints()
             errors_p1.append(e1)
             errors_p2.append(e2)
             errors_p3.append(e3)
@@ -854,6 +930,7 @@ else:
         print('Velocity      (MPJVE) action-wise average:', round(np.mean(errors_vel), 2), 'mm')
 
     if not args.by_subject:
+
         run_evaluation(all_actions, action_filter)
     else:
         for subject in all_actions_by_subject.keys():

@@ -99,7 +99,8 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
         ax.set_title(title) #, pad=35
         ax_3d.append(ax)
         lines_3d.append([])
-        trajectories.append(data[:, 0, [0, 1]])
+        #trajectories.append(data[:, 0, [0, 1]])
+        trajectories.append(np.zeros(data[:, 0, [0, 1]].shape))
     poses = list(poses.values())
 
     # Decode video

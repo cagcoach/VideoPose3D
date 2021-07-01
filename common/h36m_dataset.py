@@ -7,9 +7,14 @@
 
 import numpy as np
 import copy
-from common.skeleton import Skeleton
-from common.mocap_dataset import MocapDataset
-from common.camera import normalize_screen_coordinates, image_coordinates
+try:
+    from common.skeleton import Skeleton
+    from common.mocap_dataset import MocapDataset
+    from common.camera import normalize_screen_coordinates, image_coordinates
+except ModuleNotFoundError:
+    from external.VideoPose3D.common.skeleton import Skeleton
+    from external.VideoPose3D.common.mocap_dataset import MocapDataset
+    from external.VideoPose3D.common.camera import normalize_screen_coordinates, image_coordinates
        
 h36m_skeleton = Skeleton(parents=[-1,  0,  1,  2,  3,  4,  0,  6,  7,  8,  9,  0, 11, 12, 13, 14, 12,
        16, 17, 18, 19, 20, 19, 22, 12, 24, 25, 26, 27, 28, 27, 30],
@@ -207,8 +212,8 @@ h36m_cameras_extrinsic_params = {
 }
 
 class Human36mDataset(MocapDataset):
-    def __init__(self, path, remove_static_joints=True):
-        super().__init__(fps=50, skeleton=h36m_skeleton)
+    def __init__(self, path, remove_static_joints=True, skeleton=h36m_skeleton):
+        super().__init__(fps=50, skeleton=skeleton)
         
         self._cameras = copy.deepcopy(h36m_cameras_extrinsic_params)
         for cameras in self._cameras.values():
@@ -229,10 +234,10 @@ class Human36mDataset(MocapDataset):
                                                    cam['center'],
                                                    cam['radial_distortion'],
                                                    cam['tangential_distortion']))
-        
+
         # Load serialized dataset
         data = np.load(path, allow_pickle=True)['positions_3d'].item()
-        
+
         self._data = {}
         for subject, actions in data.items():
             self._data[subject] = {}
@@ -241,15 +246,33 @@ class Human36mDataset(MocapDataset):
                     'positions': positions,
                     'cameras': self._cameras[subject],
                 }
-                
         if remove_static_joints:
             # Bring the skeleton to 17 joints instead of the original 32
             self.remove_joints([4, 5, 9, 10, 11, 16, 20, 21, 22, 23, 24, 28, 29, 30, 31])
-            
+
             # Rewire shoulders to the correct parents
             self._skeleton._parents[11] = 8
             self._skeleton._parents[14] = 8
-            
+
+
+    @staticmethod
+    def Joints():
+        return {"tophead": 10,
+                "nose": 9,
+                "mshoulder": 8,
+                "lshoulder": 11,
+                "rshoulder": 14,
+                "lelbow": 12,
+                "relbow": 15,
+                "lwrist": 13,
+                "rwrist": 16,
+                "chest": 7,
+                "mhip": 0,
+                "lhip": 4,
+                "rhip": 1,
+                "lknee": 5,
+                "rknee": 2,
+                "lancle": 6,
+                "rancle": 3}
     def supports_semi_supervised(self):
         return True
-   

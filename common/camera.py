@@ -8,8 +8,13 @@
 import numpy as np
 import torch
 
-from common.utils import wrap
-from common.quaternion import qrot, qinverse
+try:
+    from common.utils import wrap
+    from common.quaternion import qrot, qinverse
+except ModuleNotFoundError:
+    from external.VideoPose3D.common.utils import wrap
+    from external.VideoPose3D.common.quaternion import qrot, qinverse
+
 
 def normalize_screen_coordinates(X, w, h): 
     assert X.shape[-1] == 2
