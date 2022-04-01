@@ -4,6 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
+import traceback
 
 import torch
 import numpy as np
@@ -15,7 +16,7 @@ def mpjpe(predicted, target):
     """
     assert predicted.shape == target.shape
     norms = (torch.norm(predicted - target, dim=len(target.shape)-1))
-    return torch.nansum(norms) / torch.sum(torch.isnan(norms) == False)
+    return torch.nansum(norms) / torch.nansum(torch.isnan(norms) == False)
     
 def weighted_mpjpe(predicted, target, w):
     """
@@ -32,7 +33,10 @@ def p_mpjpe(predicted, target):
     """
     assert predicted.shape == target.shape
 
-    np.isnan(predicted).any(axis=1)
+    predicted = predicted[:,~np.isnan(target).all(axis=0).all(axis=1),:]
+    target = target[:, ~np.isnan(target).all(axis=0).all(axis=1), :]
+    target = target[:, ~np.isnan(predicted).all(axis=0).all(axis=1), :]
+    predicted = predicted[:, ~np.isnan(predicted).all(axis=0).all(axis=1), :]
 
     muX = np.nanmean(target, axis=1, keepdims=True)
     muY = np.nanmean(predicted, axis=1, keepdims=True)
@@ -46,6 +50,8 @@ def p_mpjpe(predicted, target):
     X0 /= normX
     Y0 /= normY
 
+    X0[np.isnan(X0)] = 0
+    Y0[np.isnan(Y0)] = 0
     H = np.matmul(X0.transpose(0, 2, 1), Y0)
     U, s, Vt = np.linalg.svd(H)
     V = Vt.transpose(0, 2, 1)
@@ -64,9 +70,13 @@ def p_mpjpe(predicted, target):
     
     # Perform rigid transformation on the input
     predicted_aligned = a*np.matmul(predicted, R) + t
-    
+
     # Return MPJPE
-    return np.mean(np.linalg.norm(predicted_aligned - target, axis=len(target.shape)-1))
+    ret = np.nanmean(np.linalg.norm(predicted_aligned - target, axis=len(target.shape)-1))
+    if ret == np.nan:
+        print("IS NAN")
+        print(traceback.format_exc())
+    return ret
     
 def n_mpjpe(predicted, target):
     """
@@ -75,8 +85,8 @@ def n_mpjpe(predicted, target):
     """
     assert predicted.shape == target.shape
     
-    norm_predicted = torch.mean(torch.sum(predicted**2, dim=3, keepdim=True), dim=2, keepdim=True)
-    norm_target = torch.mean(torch.sum(target*predicted, dim=3, keepdim=True), dim=2, keepdim=True)
+    norm_predicted = torch.mean(torch.nansum(predicted**2, dim=3, keepdim=True), dim=2, keepdim=True)
+    norm_target = torch.mean(torch.nansum(target*predicted, dim=3, keepdim=True), dim=2, keepdim=True)
     scale = norm_target / norm_predicted
     return mpjpe(scale * predicted, target)
 
@@ -89,4 +99,4 @@ def mean_velocity_error(predicted, target):
     velocity_predicted = np.diff(predicted, axis=0)
     velocity_target = np.diff(target, axis=0)
     
-    return np.mean(np.linalg.norm(velocity_predicted - velocity_target, axis=len(target.shape)-1))
+    return np.nanmean(np.linalg.norm(velocity_predicted - velocity_target, axis=len(target.shape)-1))

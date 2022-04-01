@@ -6,10 +6,12 @@
 #
 
 import argparse
+from configparser import ConfigParser
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Training script')
-
+    parser.add_argument('-conf', '--configfile', default=None, type=str, metavar='PATH', help='configuration file path')
     # General arguments
     parser.add_argument('-d', '--dataset', default='h36m', type=str, metavar='NAME', help='target dataset') # h36m or humaneva
     parser.add_argument('-k', '--keypoints', default='cpn_ft_h36m_dbb', type=str, metavar='NAME', help='2D detections to use')
@@ -75,15 +77,41 @@ def parse_args():
     parser.set_defaults(bone_length_term=True)
     parser.set_defaults(data_augmentation=True)
     parser.set_defaults(test_time_augmentation=True)
-    
+
     args = parser.parse_args()
+
+    parserdict = {i.dest: i for i in parser._actions}
+    if not args.configfile is None:
+        config = ConfigParser()
+        config.read(args.configfile)
+        for k,v in config["args"].items():
+            if not k in parserdict:
+                args.__setattr__(k, v)
+                continue
+
+            if parserdict[k].type is None:
+                parserdict[k].type = type(parserdict[k].default)
+
+            if parserdict[k].type == int:
+                #args.__setattr__(k,config["args"].getint(k))
+                parser.set_defaults(**{k: config["args"].getint(k)})
+            elif parserdict[k].type == bool:
+                #args.__setattr__(k,config["args"].getboolean(k))
+                parser.set_defaults(**{k: config["args"].getboolean(k)})
+            elif parserdict[k].type == float:
+                #args.__setattr__(k,config["args"].getfloat(k))
+                parser.set_defaults(**{k: config["args"].getfloat(k)})
+            else:
+                #args.__setattr__(k, v)
+                parser.set_defaults(**{k: v})
+
+    args = parser.parse_args() #read args again using modifies defaults
     # Check invalid configuration
     if args.resume and args.evaluate:
         print('Invalid flags: --resume and --evaluate cannot be set at the same time')
         exit()
-        
+
     if args.export_training_curves and args.no_eval:
         print('Invalid flags: --export-training-curves and --no-eval cannot be set at the same time')
         exit()
-
     return args

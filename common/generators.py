@@ -4,9 +4,11 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 #
-
+import time
 from itertools import zip_longest
 import numpy as np
+import torch
+
 
 class ChunkedGenerator:
     """
@@ -51,9 +53,10 @@ class ChunkedGenerator:
         if cameras is not None:
             self.batch_cam = np.empty((batch_size, cameras[0].shape[-1]))
         if poses_3d is not None:
-            self.batch_3d = np.empty((batch_size, chunk_length, poses_3d[0].shape[-2], poses_3d[0].shape[-1]))
-        self.batch_2d = np.empty((batch_size, chunk_length + 2*pad, poses_2d[0].shape[-2], poses_2d[0].shape[-1]))
-
+            #self.batch_3d = np.empty((batch_size, chunk_length, poses_3d[0].shape[-2], poses_3d[0].shape[-1]))
+            self.batch_3d = torch.empty((batch_size, chunk_length, poses_3d[0].shape[-2], poses_3d[0].shape[-1]))
+        #self.batch_2d = np.empty((batch_size, chunk_length + 2*pad, poses_2d[0].shape[-2], poses_2d[0].shape[-1]))
+        self.batch_2d = torch.empty((batch_size, chunk_length + 2*pad, poses_2d[0].shape[-2], poses_2d[0].shape[-1]))
         self.num_batches = (len(pairs) + batch_size - 1) // batch_size
         self.batch_size = batch_size
         self.random = np.random.RandomState(random_seed)
@@ -66,8 +69,21 @@ class ChunkedGenerator:
         
         self.cameras = cameras
         self.poses_3d = poses_3d
+        for p in poses_3d:
+            p[np.isnan(p)] = 0
+        self.torch_poses_3d = [torch.from_numpy(a.astype('float32')) for a in poses_3d]
+
         self.poses_2d = poses_2d
-        
+        for p in poses_2d:
+            p[np.isnan(p)] = 0
+        self.torch_poses_2d = [torch.from_numpy(a.astype('float32')) for a in poses_2d]
+
+        if torch.cuda.is_available():
+            self.torch_poses_3d = [a.cuda() for a in self.torch_poses_3d]
+            self.torch_poses_2d = [a.cuda() for a in self.torch_poses_2d]
+            self.batch_2d = self.batch_2d.cuda()
+            self.batch_3d = self.batch_3d.cuda()
+
         self.augment = augment
         self.kps_left = kps_left
         self.kps_right = kps_right
@@ -97,59 +113,97 @@ class ChunkedGenerator:
             return self.state
     
     def next_epoch(self):
+        no_of_kpts = self.poses_2d[0].shape[1]
+
+        jointslist = self.joints_left + self.joints_right
+        inv_jointslist =self.joints_right + self.joints_left
+        kpslist =  self.kps_left + self.kps_right
+        inv_kpslist = self.kps_right + self.kps_left
+
+        swapedjointslist = [inv_jointslist[jointslist.index(i)] if i in jointslist else i for i in range(no_of_kpts)]
+        swapedkpslist = [inv_kpslist[kpslist.index(i)] if i in kpslist else i for i in range(no_of_kpts)]
+
         enabled = True
+        fliplist = np.empty((self.batch_size), dtype=bool)
+
+        poses_3d_is_not_none = self.torch_poses_3d is not None
         while enabled:
             start_idx, pairs = self.next_pairs()
             for b_i in range(start_idx, self.num_batches):
                 chunks = pairs[b_i*self.batch_size : (b_i+1)*self.batch_size]
                 for i, (seq_i, start_3d, end_3d, flip) in enumerate(chunks):
+                    fliplist[i] = bool(flip)
                     start_2d = start_3d - self.pad - self.causal_shift
                     end_2d = end_3d + self.pad - self.causal_shift
 
                     # 2D poses
-                    seq_2d = self.poses_2d[seq_i]
+                    seq_2d = self.torch_poses_2d[seq_i]
                     low_2d = max(start_2d, 0)
                     high_2d = min(end_2d, seq_2d.shape[0])
                     pad_left_2d = low_2d - start_2d
                     pad_right_2d = end_2d - high_2d
                     if pad_left_2d != 0 or pad_right_2d != 0:
-                        self.batch_2d[i] = np.pad(seq_2d[low_2d:high_2d], ((pad_left_2d, pad_right_2d), (0, 0), (0, 0)), 'edge')
+                        self.batch_2d[i] = torch.nn.functional.pad(seq_2d[low_2d:high_2d].transpose(0,2), (pad_left_2d, pad_right_2d), 'replicate').transpose(0,2)
+                        #slize = np.minimum(np.maximum(0, range(start_2d, end_2d)),seq_2d.shape[0]-1)
+                        #self.batch_2d[i] = seq_2d[slize]
+
                     else:
                         self.batch_2d[i] = seq_2d[low_2d:high_2d]
 
-                    if flip:
-                        # Flip 2D keypoints
-                        self.batch_2d[i, :, :, 0] *= -1
-                        self.batch_2d[i, :, self.kps_left + self.kps_right] = self.batch_2d[i, :, self.kps_right + self.kps_left]
-
                     # 3D poses
-                    if self.poses_3d is not None:
-                        seq_3d = self.poses_3d[seq_i]
+                    if poses_3d_is_not_none:
+                        seq_3d = self.torch_poses_3d[seq_i]
                         low_3d = max(start_3d, 0)
                         high_3d = min(end_3d, seq_3d.shape[0])
                         pad_left_3d = low_3d - start_3d
                         pad_right_3d = end_3d - high_3d
                         if pad_left_3d != 0 or pad_right_3d != 0:
-                            self.batch_3d[i] = np.pad(seq_3d[low_3d:high_3d], ((pad_left_3d, pad_right_3d), (0, 0), (0, 0)), 'edge')
+                            self.batch_3d[i] = torch.nn.functional.pad(seq_3d[low_3d:high_3d].transpose(0,2), (pad_left_3d, pad_right_3d), 'replicate').transpose(0,2)
+                            #slize = np.minimum(np.maximum(0, range(start_3d, end_3d)), seq_3d.shape[0] - 1)
+                            #self.batch_3d[i] = seq_3d[slize]
+
                         else:
                             self.batch_3d[i] = seq_3d[low_3d:high_3d]
 
-                        if flip:
-                            # Flip 3D joints
-                            self.batch_3d[i, :, :, 0] *= -1
-                            self.batch_3d[i, :, self.joints_left + self.joints_right] = \
-                                    self.batch_3d[i, :, self.joints_right + self.joints_left]
+                        #if flip:
+                        #    # Flip 3D joints
+                        #    self.batch_3d[i, :, :, 0] *= -1
+                        #    self.batch_3d[i, :, jointslist] = \
+                        #            self.batch_3d[i, :, inv_jointslist]
+                    #if flip:
+                    #    # Flip 2D keypoints
+                    #    self.batch_2d[i, :, :, 0] *= -1
+                    #    self.batch_2d[i, :, self.kps_left + self.kps_right] = self.batch_2d[i, :, self.kps_right + self.kps_left]
 
                     # Cameras
                     if self.cameras is not None:
                         self.batch_cam[i] = self.cameras[seq_i]
-                        if flip:
-                            # Flip horizontal distortion coefficients
-                            self.batch_cam[i, 2] *= -1
-                            self.batch_cam[i, 7] *= -1
+                        #if flip:
+                        #    # Flip horizontal distortion coefficients
+                        #    self.batch_cam[i, 2] *= -1
+                        #    self.batch_cam[i, 7] *= -1
+
+
+                fliplist[len(chunks):] = False
+
+                self.batch_2d[fliplist, :, :, 0] *= -1
+                self.batch_2d[fliplist, :, :] = self.batch_2d[fliplist, :, :][:, :, swapedkpslist]
+
+                if self.torch_poses_3d is not None:
+                    self.batch_3d[fliplist, :, :,0] *= -1
+                    self.batch_3d[fliplist, :, :] = self.batch_3d[fliplist, :, :][:, :, swapedjointslist]
+
+                if self.cameras is not None:
+                    self.batch_cam[fliplist, 2] *= -1
+                    self.batch_cam[fliplist, 7] *= -1
 
                 if self.endless:
                     self.state = (b_i + 1, pairs)
+
+                #torch.cuda.synchronize()
+                #Ctime += time.time()
+                #print("get data for next epoch: " + str(Ctime))
+
                 if self.poses_3d is None and self.cameras is None:
                     yield None, None, self.batch_2d[:len(chunks)]
                 elif self.poses_3d is not None and self.cameras is None:

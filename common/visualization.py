@@ -6,6 +6,9 @@
 #
 
 import matplotlib
+
+from src.DataInterface.Sequence import Sequence
+
 matplotlib.use('Agg')
 
 import matplotlib.pyplot as plt
@@ -59,6 +62,7 @@ def downsample_tensor(X, factor):
     length = X.shape[0]//factor * factor
     return np.mean(X[:length].reshape(-1, factor, *X.shape[1:]), axis=1)
 
+
 def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrate, azim, output, viewport,
                      limit=-1, downsample=1, size=6, input_video_path=None, input_video_skip=0):
     """
@@ -70,6 +74,7 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
      -- 'filename.mp4': render and export the animation as an h264 video (requires ffmpeg).
      -- 'filename.gif': render and export the animation a gif file (requires imagemagick).
     """
+
     plt.ioff()
     fig = plt.figure(figsize=(size*(1 + len(poses)), size))
     ax_in = fig.add_subplot(1, 1 + len(poses), 1)
@@ -81,7 +86,7 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
     ax_3d = []
     lines_3d = []
     trajectories = []
-    radius = 1.7
+    radius = 3.7
     for index, (title, data) in enumerate(poses.items()):
         ax = fig.add_subplot(1, 1 + len(poses), index+2, projection='3d')
         ax.view_init(elev=15., azim=azim)
@@ -142,6 +147,8 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
 
     parents = skeleton.parents()
     def update_video(i):
+        keypointsi = keypoints[i]
+
         nonlocal initialized, image, lines, points
 
         for n, ax in enumerate(ax_3d):
@@ -150,48 +157,55 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
 
         # Update 2D poses
         joints_right_2d = keypoints_metadata['keypoints_symmetry'][1]
+        joints_left_2d = keypoints_metadata['keypoints_symmetry'][0]
         colors_2d = np.full(keypoints.shape[1], 'black')
+        colors_2d[joints_left_2d] = 'blue'
         colors_2d[joints_right_2d] = 'red'
         if not initialized:
             image = ax_in.imshow(all_frames[i], aspect='equal')
-            
-            for j, j_parent in enumerate(parents):
-                if j_parent == -1:
-                    continue
-                    
-                if len(parents) == keypoints.shape[1] and keypoints_metadata['layout_name'] != 'coco':
-                    # Draw skeleton only if keypoints match (otherwise we don't have the parents definition)
-                    lines.append(ax_in.plot([keypoints[i, j, 0], keypoints[i, j_parent, 0]],
-                                            [keypoints[i, j, 1], keypoints[i, j_parent, 1]], color='pink'))
+            if type(parents) == list or type(parents) == tuple or type(parents) == np.ndarray:
+                enumparents = parents
+            else:
+                enumparents = enumerate(parents)
+            for j, j_parent in enumparents:
 
-                col = 'red' if j in skeleton.joints_right() else 'black'
+                lines.append(ax_in.plot([keypointsi [j, 0], keypointsi[j_parent, 0]],
+                                        [keypointsi [j, 1], keypointsi[j_parent, 1]], color='pink'))
+
+
+                col = 'red' if (j in skeleton.joints_right() or j_parent in skeleton.joints_right() ) else 'black'
                 for n, ax in enumerate(ax_3d):
                     pos = poses[n][i]
                     lines_3d[n].append(ax.plot([pos[j, 0], pos[j_parent, 0]],
                                                [pos[j, 1], pos[j_parent, 1]],
                                                [pos[j, 2], pos[j_parent, 2]], zdir='z', c=col))
 
-            points = ax_in.scatter(*keypoints[i].T, 10, color=colors_2d, edgecolors='white', zorder=10)
+            points = ax_in.scatter(*keypointsi.T, 10, color=colors_2d, edgecolors='white', zorder=10)
 
             initialized = True
         else:
             image.set_data(all_frames[i])
 
-            for j, j_parent in enumerate(parents):
-                if j_parent == -1:
-                    continue
+
+            if type(parents) == list or type(parents) == tuple or type(parents) == np.ndarray:
+                enumparents = parents
+            else:
+                enumparents = enumerate(parents)
+            cnt = 0
+            for j, j_parent in enumparents:
                 
                 if len(parents) == keypoints.shape[1] and keypoints_metadata['layout_name'] != 'coco':
-                    lines[j-1][0].set_data([keypoints[i, j, 0], keypoints[i, j_parent, 0]],
-                                           [keypoints[i, j, 1], keypoints[i, j_parent, 1]])
+                    lines[cnt][0].set_data([keypointsi[j, 0], keypointsi[j_parent, 0]],
+                                           [keypointsi[j, 1], keypointsi[j_parent, 1]])
 
                 for n, ax in enumerate(ax_3d):
                     pos = poses[n][i]
-                    lines_3d[n][j-1][0].set_xdata(np.array([pos[j, 0], pos[j_parent, 0]]))
-                    lines_3d[n][j-1][0].set_ydata(np.array([pos[j, 1], pos[j_parent, 1]]))
-                    lines_3d[n][j-1][0].set_3d_properties(np.array([pos[j, 2], pos[j_parent, 2]]), zdir='z')
+                    lines_3d[n][cnt][0].set_xdata(np.array([pos[j, 0], pos[j_parent, 0]]))
+                    lines_3d[n][cnt][0].set_ydata(np.array([pos[j, 1], pos[j_parent, 1]]))
+                    lines_3d[n][cnt][0].set_3d_properties(np.array([pos[j, 2], pos[j_parent, 2]]), zdir='z')
 
-            points.set_offsets(keypoints[i])
+                cnt += 1
+            points.set_offsets(keypointsi)
         
         print('{}/{}      '.format(i, limit), end='\r')
         
@@ -199,12 +213,17 @@ def render_animation(keypoints, keypoints_metadata, poses, skeleton, fps, bitrat
     fig.tight_layout()
     
     anim = FuncAnimation(fig, update_video, frames=np.arange(0, limit), interval=1000/fps, repeat=False)
+
     if output.endswith('.mp4'):
         Writer = writers['ffmpeg']
         writer = Writer(fps=fps, metadata={}, bitrate=bitrate)
         anim.save(output, writer=writer)
     elif output.endswith('.gif'):
         anim.save(output, dpi=80, writer='imagemagick')
+    elif output == "interactive":
+        matplotlib.use("TKAgg")
+        plt.show()
+
     else:
         raise ValueError('Unsupported output format (only .mp4 and .gif are supported)')
     plt.close()

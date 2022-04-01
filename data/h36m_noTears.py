@@ -7,6 +7,7 @@ except:
 
 from common.camera import normalize_screen_coordinates
 from common.h36m_dataset import h36m_skeleton, h36m_cameras_extrinsic_params, h36m_cameras_intrinsic_params
+from common.skeleton import Skeleton
 from common.mocap_dataset import MocapDataset
 import copy
 import numpy as np
@@ -16,6 +17,55 @@ import os.path
 
 
 class Human36mNoTears(MocapDataset):
+    def __mod_h36m_skeleton(self):
+
+        j = self.Joints()
+        joints_left = [j[k] for k in "lear leye lshoulder lelbow lwrist lhip lknee lancle".split(" ")]
+        joints_right = [j[k] for k in "rear reye rshoulder relbow rwrist rhip rknee rancle".split(" ")]
+        '''
+        "lear": 3,
+                "leye": 1,
+                "reye": 2,
+                "rear": 4,
+                "nose": 0,
+                #"mshoulder": 8,
+                "lshoulder": 5,
+                "rshoulder": 6,
+                "lelbow": 7,
+                "relbow": 8,
+                "lwrist": 9,
+                "rwrist": 10,
+                #"chest": 7,
+                #"mhip": 0,
+                "lhip": 11,
+                "rhip": 12,
+                "lknee": 13,
+                "rknee": 14,
+                "lancle": 15,
+                "rancle": 16}'''
+        parents = [-1] * 17
+
+        parents[j["leye"]] = j["lear"]
+        parents[j["lear"]] = j["nose"]
+        parents[j["lshoulder"]] = j["nose"]
+        parents[j["lelbow"]] = j["lshoulder"]
+        parents[j["lwrist"]] = j["lelbow"]
+        parents[j["lhip"]] = j["lshoulder"]
+        parents[j["lknee"]] = j["lhip"]
+        parents[j["lancle"]] = j["lknee"]
+
+        parents[j["reye"]] = j["rear"]
+        parents[j["rear"]] = j["nose"]
+        parents[j["rshoulder"]] = j["nose"]
+        parents[j["relbow"]] = j["rshoulder"]
+        parents[j["rwrist"]] = j["relbow"]
+        parents[j["rhip"]] = j["rshoulder"]
+        parents[j["rknee"]] = j["rhip"]
+        parents[j["rancle"]] = j["rknee"]
+
+        return Skeleton(parents=parents, joints_left=joints_left, joints_right=joints_right)
+
+
 
     @staticmethod
     def getActionFromIDs(subject,action,subaction):
@@ -221,7 +271,9 @@ class Human36mNoTears(MocapDataset):
         }
         return switcher[subject][action-1][subaction-1]
 
-    def __init__(self, path, skeleton=h36m_skeleton):
+    def __init__(self, path, skeleton=None):
+        if skeleton is None:
+            skeleton = self.__mod_h36m_skeleton()
         super().__init__(fps=50, skeleton=skeleton)
         self._cameras = copy.deepcopy(h36m_cameras_extrinsic_params)
         for cameras in self._cameras.values():

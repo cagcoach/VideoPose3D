@@ -212,6 +212,7 @@ h36m_cameras_extrinsic_params = {
 }
 
 class Human36mDataset(MocapDataset):
+
     def __init__(self, path, remove_static_joints=True, skeleton=h36m_skeleton):
         super().__init__(fps=50, skeleton=skeleton)
         

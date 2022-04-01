@@ -49,8 +49,7 @@ class Skeleton:
             else:
                 index_offsets[i:] += 1
         self._parents = np.array(new_parents)
-        
-        
+
         if self._joints_left is not None:
             new_joints_left = []
             for joint in self._joints_left:
@@ -76,13 +75,17 @@ class Skeleton:
         
     def _compute_metadata(self):
         self._has_children = np.zeros(len(self._parents)).astype(bool)
-        for i, parent in enumerate(self._parents):
+        if type(self._parents[0]) == list or type(self._parents[0]) == tuple or type(self._parents[0]) == np.ndarray:
+            enumparents = self._parents
+        else:
+            enumparents = enumerate(self._parents)
+        for i, parent in enumparents:
             if parent != -1:
                 self._has_children[parent] = True
 
         self._children = []
-        for i, parent in enumerate(self._parents):
+        for i, parent in enumparents:
             self._children.append([])
-        for i, parent in enumerate(self._parents):
+        for i, parent in enumparents:
             if parent != -1:
                 self._children[parent].append(i)
